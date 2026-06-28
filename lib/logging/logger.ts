@@ -40,12 +40,15 @@ export const logger = {
     customerId: string,
     tokensUsed: number,
     cost: number,
-    latencyMs: number
+    latencyMs: number,
+    toolsUsed: string[] = []
   ) =>
     log("info", "Chat request completed", requestId, {
       customerId,
       tokensUsed,
       cost: parseFloat(cost.toFixed(6)),
       latencyMs,
+      toolsUsed,
+      toolCallCount: toolsUsed.length,
     }),
 };
