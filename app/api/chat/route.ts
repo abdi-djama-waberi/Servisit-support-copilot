@@ -1,20 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import type Anthropic from "@anthropic-ai/sdk";
 import { generateRequestId } from "@/lib/utils/generateRequestId";
 import { logger } from "@/lib/logging/logger";
 import { incrementMetrics, trackActiveRequest } from "@/app/api/metrics/route";
-import {
-  anthropic,
-  CLAUDE_MODEL,
-  SYSTEM_PROMPT,
-  INPUT_COST_PER_TOKEN,
-  OUTPUT_COST_PER_TOKEN,
-  type ConversationMessage,
-} from "@/lib/claude/client";
-import { TOOL_DEFINITIONS, executeTool } from "@/lib/claude/tools";
+import { type ConversationMessage } from "@/lib/claude/providers";
+import { routeWithFallback } from "@/lib/claude/fallback-router";
+import { isErrorMode } from "@/lib/claude/error-simulator";
 
 const CUSTOMER_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
-const MAX_TOOL_ITERATIONS = 10;
 
 function authenticate(req: NextRequest): boolean {
   const auth = req.headers.get("authorization");
@@ -25,89 +17,6 @@ function authenticate(req: NextRequest): boolean {
 
 function sse(obj: Record<string, unknown>): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`);
-}
-
-type ToolUseBlock = Extract<Anthropic.ContentBlock, { type: "tool_use" }>;
-
-/**
- * Runs the agentic tool-call loop until Claude returns a final text response.
- * All tool calls are resolved before any streaming begins.
- */
-async function runToolLoop(
-  initialMessages: Anthropic.MessageParam[]
-): Promise<{
-  finalText: string;
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  toolsUsed: string[];
-  iterations: number;
-}> {
-  let messages: Anthropic.MessageParam[] = initialMessages;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  const toolsUsed: string[] = [];
-  let iterations = 0;
-  let finalText = "";
-
-  while (iterations < MAX_TOOL_ITERATIONS) {
-    iterations++;
-
-    const response = await anthropic.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: 2048,
-      system: SYSTEM_PROMPT,
-      tools: TOOL_DEFINITIONS,
-      messages,
-    });
-
-    totalInputTokens += response.usage.input_tokens;
-    totalOutputTokens += response.usage.output_tokens;
-
-    if (response.stop_reason === "tool_use") {
-      const toolUseBlocks = response.content.filter(
-        (b): b is ToolUseBlock => b.type === "tool_use"
-      );
-
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-      for (const block of toolUseBlocks) {
-        toolsUsed.push(block.name);
-
-        let resultContent: string;
-        let isError = false;
-
-        try {
-          const result = executeTool(block.name, block.input as Record<string, string>);
-          resultContent = JSON.stringify(result);
-        } catch (err) {
-          resultContent = JSON.stringify({
-            error: err instanceof Error ? err.message : "Tool execution failed",
-          });
-          isError = true;
-        }
-
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: resultContent,
-          ...(isError && { is_error: true }),
-        });
-      }
-
-      messages = [
-        ...messages,
-        { role: "assistant", content: response.content },
-        { role: "user", content: toolResults },
-      ];
-    } else {
-      // stop_reason is "end_turn" or "max_tokens" — extract final text
-      const textBlock = response.content.find((b) => b.type === "text");
-      finalText = textBlock?.type === "text" ? textBlock.text : "";
-      break;
-    }
-  }
-
-  return { finalText, totalInputTokens, totalOutputTokens, toolsUsed, iterations };
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse | Response> {
@@ -126,7 +35,8 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     return NextResponse.json({ error: "Invalid JSON body", requestId }, { status: 400 });
   }
 
-  const { message, customerId, conversationHistory } = body as Record<string, unknown>;
+  const { message, customerId, conversationHistory, _simulateError } =
+    body as Record<string, unknown>;
 
   if (typeof message !== "string" || message.trim() === "") {
     logger.warn("Chat validation failed: empty message", requestId);
@@ -147,6 +57,8 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     );
   }
 
+  const simulateError = isErrorMode(_simulateError) ? _simulateError : undefined;
+
   const history: ConversationMessage[] = Array.isArray(conversationHistory)
     ? (conversationHistory as ConversationMessage[]).filter(
         (h) => h && typeof h.role === "string" && typeof h.content === "string"
@@ -157,6 +69,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     customerId,
     messageLength: message.trim().length,
     historyLength: history.length,
+    ...(simulateError && { simulateError }),
   });
 
   trackActiveRequest(1);
@@ -165,54 +78,64 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const initialMessages: Anthropic.MessageParam[] = [
-          ...history.map((h) => ({ role: h.role, content: h.content })),
-          { role: "user" as const, content: message.trim() },
-        ];
-
-        const { finalText, totalInputTokens, totalOutputTokens, toolsUsed, iterations } =
-          await runToolLoop(initialMessages);
-
-        const tokensUsed = totalInputTokens + totalOutputTokens;
-        const cost =
-          totalInputTokens * INPUT_COST_PER_TOKEN +
-          totalOutputTokens * OUTPUT_COST_PER_TOKEN;
-        const latencyMs = Date.now() - startTime;
-
-        logger.info("Tool loop completed", requestId, {
-          customerId,
-          iterations,
-          toolsUsed,
-          toolCallCount: toolsUsed.length,
+        const result = await routeWithFallback({
+          message: message.trim(),
+          history,
+          simulateError,
+          requestId,
         });
 
-        // Emit final text as a single delta (tool loop already resolved)
-        if (finalText) {
-          controller.enqueue(sse({ type: "delta", text: finalText }));
+        const latencyMs = Date.now() - startTime;
+
+        if (!result.success) {
+          logger.error("All providers exhausted", requestId, {
+            customerId,
+            latencyMs,
+            failedProviders: result.failedProviders,
+            retryCount: result.retryCount,
+          });
+          controller.enqueue(
+            sse({ type: "error", message: "Service temporarily unavailable", requestId })
+          );
+          return;
         }
 
-        incrementMetrics(latencyMs, cost, tokensUsed);
-        logger.logChatRequest(requestId, customerId, tokensUsed, cost, latencyMs, toolsUsed);
+        incrementMetrics(latencyMs, result.cost, result.tokensUsed);
+        logger.logChatRequest(
+          requestId,
+          customerId,
+          result.tokensUsed,
+          result.cost,
+          latencyMs,
+          result.toolsUsed,
+          result.providerUsed,
+          result.failedProviders,
+          result.retryCount
+        );
 
+        controller.enqueue(sse({ type: "delta", text: result.text }));
         controller.enqueue(
           sse({
             type: "done",
-            tokensUsed,
-            cost: parseFloat(cost.toFixed(6)),
-            toolsUsed,
-            iterations,
+            tokensUsed: result.tokensUsed,
+            cost: parseFloat(result.cost.toFixed(6)),
+            providerUsed: result.providerUsed,
+            toolsUsed: result.toolsUsed,
+            iterations: result.iterations,
+            failedProviders: result.failedProviders,
+            retryCount: result.retryCount,
             requestId,
           })
         );
       } catch (err) {
         const latencyMs = Date.now() - startTime;
-        logger.error("Claude API error", requestId, {
+        logger.error("Unexpected error in chat handler", requestId, {
           customerId,
           latencyMs,
-          error: err instanceof Error ? err.message : String(err),
+          errorName: err instanceof Error ? err.name : "UnknownError",
         });
         controller.enqueue(
-          sse({ type: "error", message: "Claude API unavailable", requestId })
+          sse({ type: "error", message: "Internal server error", requestId })
         );
       } finally {
         trackActiveRequest(-1);

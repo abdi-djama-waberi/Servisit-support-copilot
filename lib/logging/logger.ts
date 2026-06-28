@@ -41,7 +41,10 @@ export const logger = {
     tokensUsed: number,
     cost: number,
     latencyMs: number,
-    toolsUsed: string[] = []
+    toolsUsed: string[] = [],
+    providerUsed = "claude",
+    failedProviders: string[] = [],
+    retryCount = 0
   ) =>
     log("info", "Chat request completed", requestId, {
       customerId,
@@ -50,5 +53,8 @@ export const logger = {
       latencyMs,
       toolsUsed,
       toolCallCount: toolsUsed.length,
+      providerUsed,
+      failedProviders,
+      retryCount,
     }),
 };
