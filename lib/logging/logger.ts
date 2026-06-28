@@ -35,4 +35,17 @@ export const logger = {
     log("error", message, requestId, meta),
   debug: (message: string, requestId?: string, meta?: Record<string, unknown>) =>
     log("debug", message, requestId, meta),
+  logChatRequest: (
+    requestId: string,
+    customerId: string,
+    tokensUsed: number,
+    cost: number,
+    latencyMs: number
+  ) =>
+    log("info", "Chat request completed", requestId, {
+      customerId,
+      tokensUsed,
+      cost: parseFloat(cost.toFixed(6)),
+      latencyMs,
+    }),
 };

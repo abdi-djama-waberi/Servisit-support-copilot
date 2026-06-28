@@ -4,12 +4,14 @@ import { logger } from "@/lib/logging/logger";
 
 // In-memory counters. In production these would come from a metrics store (Redis, Datadog, etc.).
 let totalRequests = 0;
+let totalTokens = 0;
 let totalCost = 0;
 let totalLatencyMs = 0;
 let activeRequests = 0;
 
-export function incrementMetrics(latencyMs: number, cost = 0): void {
+export function incrementMetrics(latencyMs: number, cost = 0, tokens = 0): void {
   totalRequests++;
+  totalTokens += tokens;
   totalCost += cost;
   totalLatencyMs += latencyMs;
 }
@@ -26,6 +28,7 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json(
     {
       totalRequests,
+      totalTokens,
       totalCost: parseFloat(totalCost.toFixed(6)),
       averageLatency: totalRequests > 0 ? parseFloat((totalLatencyMs / totalRequests).toFixed(2)) : 0,
       activeRequests,
