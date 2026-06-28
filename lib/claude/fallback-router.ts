@@ -101,8 +101,6 @@ export async function routeWithFallback(input: RouterInput): Promise<FallbackRes
           provider: provider.name,
           attempt,
           errorName: err instanceof Error ? err.name : "UnknownError",
-          // DEBUG: temporary — remove after diagnosing production failures
-          errorMessage: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
         });
       }
 
