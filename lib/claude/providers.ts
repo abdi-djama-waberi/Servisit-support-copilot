@@ -257,13 +257,15 @@ async function runGemini(input: ProviderRunInput): Promise<ProviderRunOutput> {
 
 // ─── Provider registry ───────────────────────────────────────────────────────
 
+// Priority order: Gemini (free tier) → GPT-4o → Claude (requires paid credits)
 export const PROVIDERS: ProviderDef[] = [
   {
-    name: "claude",
-    model: CLAUDE_MODEL,
-    costPerInputToken: INPUT_COST_PER_TOKEN,
-    costPerOutputToken: OUTPUT_COST_PER_TOKEN,
-    run: runClaude,
+    name: "gemini",
+    model: GEMINI_MODEL,
+    // gemini-2.0-flash: $0.10/1M input, $0.40/1M output (free tier available)
+    costPerInputToken: 0.10 / 1_000_000,
+    costPerOutputToken: 0.40 / 1_000_000,
+    run: runGemini,
   },
   {
     name: "gpt4o",
@@ -274,11 +276,10 @@ export const PROVIDERS: ProviderDef[] = [
     run: runGPT4o,
   },
   {
-    name: "gemini",
-    model: GEMINI_MODEL,
-    // gemini-2.0-flash: $0.10/1M input, $0.40/1M output
-    costPerInputToken: 0.10 / 1_000_000,
-    costPerOutputToken: 0.40 / 1_000_000,
-    run: runGemini,
+    name: "claude",
+    model: CLAUDE_MODEL,
+    costPerInputToken: INPUT_COST_PER_TOKEN,
+    costPerOutputToken: OUTPUT_COST_PER_TOKEN,
+    run: runClaude,
   },
 ];

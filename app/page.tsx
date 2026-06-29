@@ -309,7 +309,7 @@ export default function Home() {
         {/* Footer */}
         <div className="p-4 border-t border-[#1A3456]/50">
           <div className="text-[10px] text-gray-600 uppercase tracking-widest mb-1">Primary Provider</div>
-          <div className="text-xs text-gray-400 font-medium">Claude Sonnet 4.6</div>
+          <div className="text-xs text-gray-400 font-medium">Gemini 2.0 Flash</div>
           <div className="text-[10px] text-gray-600 mt-0.5">v0.1.0</div>
         </div>
       </aside>
